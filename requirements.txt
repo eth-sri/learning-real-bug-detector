@@ -1,0 +1,10 @@
+torch==1.10.0
+transformers==4.6.0
+tensorflow-cpu==2.5.0
+tensor2tensor==1.15.7
+tqdm
+scikit-learn
+pydriller
+termcolor
+gsutil
+libcst
