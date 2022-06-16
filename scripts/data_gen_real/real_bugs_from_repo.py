@@ -14,6 +14,7 @@ def get_args():
     parser.add_argument('--task', type=str, dest='task', choices=['var-misuse', 'wrong-binary-operator', 'argument-swap'], required=True)
     parser.add_argument('--user', type=str, dest='user', required=True)
     parser.add_argument('--repo', type=str, dest='repo', required=True)
+    parser.add_argument('--commit', type=str, dest='commit', default=None, required=False)
     parser.add_argument('--in_dir', type=str, dest='in_dir', default='../../../repos', required=False)
     parser.add_argument('--vocab', type=str, dest='vocab', default='../../../pretrained/pretrained-epoch-2-20210711/20210711_Python_github_python_minus_ethpy150open_deduplicated_vocabulary.txt', required=False)
     args = parser.parse_args()
@@ -106,12 +107,13 @@ def is_arg_swap(arg_diffs):
     d1, d2 = arg_diffs[0], arg_diffs[1]
     return not diff(d1[0], d2[1])[0] and not diff(d1[1], d2[0])[0]
 
-def handle_arg_swap(old_src, new_src, tokenizer, file):
+def handle_arg_swap(old_src, new_src, tokenizer, file, func_def_changes):
     try:
         old_module, new_module = cst.parse_module(old_src), cst.parse_module(new_src)
     except ParserSyntaxError:
         return
     old_wrapper, new_wrapper = cst.MetadataWrapper(old_module), cst.MetadataWrapper(new_module)
+    new_provider = new_wrapper.resolve(StrSpanPositionProvider)
     is_diff, old_res, new_res = diff(old_wrapper.module, new_wrapper.module)
     if not is_diff: return
     if not isinstance(old_res, cst.Call) or not isinstance(new_res, cst.Call): return
@@ -119,6 +121,12 @@ def handle_arg_swap(old_src, new_src, tokenizer, file):
     old_args, new_args = old_res.args, new_res.args
     if len(old_args) != len(new_args): return
     if len(old_args) <= 1: return
+    arg_swap_func_name = CodeRange(new_provider[new_res.func]).within(new_src)
+    for class_name, func_name in func_def_changes:
+        if arg_swap_func_name == class_name:
+            return
+        if func_name in arg_swap_func_name or arg_swap_func_name in func_name:
+            return
 
     arg_diffs = []
     for old_exp, new_exp in zip(old_args, new_args):
@@ -129,7 +137,6 @@ def handle_arg_swap(old_src, new_src, tokenizer, file):
     if not is_arg_swap(arg_diffs): 
         return
 
-    new_provider = new_wrapper.resolve(StrSpanPositionProvider)
     arg1_range = CodeRange(new_provider[arg_diffs[0][1]])
     arg2_range = CodeRange(new_provider[arg_diffs[1][1]])
     new_extractor = ArgSwapExtractor(new_src, tokenizer)
@@ -148,7 +155,7 @@ def handle_arg_swap(old_src, new_src, tokenizer, file):
             neg_j['repo'] = args.repo
             neg_j['path'] = file.new_path
 
-            # from realbuglearn.data.cst_utils import side_by_side
+            # from genbug.data.cst_utils import side_by_side
             # from termcolor import colored
             # print(side_by_side([old_src, new_src[:arg1_range.start]+colored(new_src[arg1_range.start:arg1_range.end], 'green')+new_src[arg1_range.end:arg2_range.start]+colored(new_src[arg2_range.start:arg2_range.end], 'yellow')+new_src[arg2_range.end:]]))
             print(json.dumps(pos_j))
@@ -160,7 +167,49 @@ def handle_arg_swap(old_src, new_src, tokenizer, file):
         print(json.dumps(exclude_path_json(args.user, args.repo, file.old_path)))
         print(json.dumps(exclude_path_json(args.user, args.repo, file.new_path)))
 
-def extract_from_file(file, tokenizer, added):
+class FuncDefExtractor(cst.CSTVisitor):
+    METADATA_DEPENDENCIES = (cst.metadata.PositionProvider,)
+
+    def __init__(self, code, file_path, added_lines):
+        self.code = code
+        self.file_path = file_path
+        self.added_lines = added_lines
+        self.res = []
+        self.class_stack = []
+
+    def visit_ClassDef(self, node):
+        self.class_stack.append(node.name.value)
+
+    def leave_ClassDef(self, node):
+        self.class_stack.pop()
+
+    def visit_FunctionDef(self, node):
+        pos = self.get_metadata(cst.metadata.PositionProvider, node.params)
+        for line in range(pos.start.line, pos.end.line+1):
+            if line in self.added_lines:
+                class_name = None if len(self.class_stack) == 0 else self.class_stack[-1]
+                func_name = node.name.value
+                if node.name.value in ('__call__', '__init__'):
+                    func_name = class_name.lower()
+                self.res.append((class_name, func_name))
+
+def extract_func_def_changes(commit):
+    func_def_changes = []
+    for file in commit.modified_files:
+        if not file.filename.endswith('.py'): continue
+        try:
+            added_lines = set(map(lambda t: t[0], file.diff_parsed['added']))
+            code = file.source_code
+            extrator = FuncDefExtractor(code, file.new_path, added_lines)
+            tree = cst.parse_module(code)
+            wrapper = cst.MetadataWrapper(tree)
+            wrapper.visit(extrator)
+            func_def_changes += extrator.res
+        except:
+            pass
+    return func_def_changes
+
+def extract_from_file(file, tokenizer, added, func_def_changes):
     if file.deleted_lines != 1: return
     if file.added_lines != 1: return
     if not file.filename.endswith('.py'): return
@@ -184,7 +233,7 @@ def extract_from_file(file, tokenizer, added):
     elif args.task == 'var-misuse':
         handle_var_misuse(old_method_src, new_method_src, tokenizer, file)
     elif args.task == 'argument-swap':
-        handle_arg_swap(old_method_src, new_method_src, tokenizer, file)
+        handle_arg_swap(old_method_src, new_method_src, tokenizer, file, func_def_changes)
     else:
         assert(False)
 
@@ -194,8 +243,14 @@ def main():
     repo = pydriller.Repository(repo_path, include_refs=True)
     added = set()
     for commit in repo.traverse_commits():
+        if args.commit is None or args.commit != commit.hash:
+            continue
+        if args.task == 'argument-swap':
+            func_def_changes = extract_func_def_changes(commit)
+        else:
+            func_def_changes = None
         for file in commit.modified_files:
-            extract_from_file(file, tokenizer, added)
+            extract_from_file(file, tokenizer, added, func_def_changes)
 
 if __name__ == '__main__':
     main()
