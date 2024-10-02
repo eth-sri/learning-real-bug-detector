@@ -6,9 +6,9 @@ The code requires `python3` (we use `python3.9`) and some Python packages that c
 
 ## Downloading Datasets and Models
 We provide the following resources for download:
-- Our datasets: [link](https://drive.google.com/file/d/18-fqMH1Un2a9_NO5OZc0Jr3hEmghS6t3/view?usp=sharing).
-- Our fine-tuned models: [link](https://drive.google.com/file/d/1ghky0A4Or5E-pyGIOgN_9D7mG_-OctbM/view?usp=sharing).
-- Pretrained models (converted from [CuBERT](https://github.com/google-research/google-research/tree/master/cubert), including the tokenizer vocabulary): [link](https://drive.google.com/file/d/1QMUtzX7Kp7w5okIblgrPEFBdypohsJZH/view?usp=sharing).
+- Our datasets: [link](https://files.sri.inf.ethz.ch/icml22/dataset.tar.gz).
+- Our fine-tuned models: [link](https://files.sri.inf.ethz.ch/icml22/fine-tuned.tar.gz).
+- Pretrained models (converted from [CuBERT](https://github.com/google-research/google-research/tree/master/cubert), including the tokenizer vocabulary): [link](https://files.sri.inf.ethz.ch/icml22/pretrained.tar.gz).
 
 After downloading and decompressing the above files, the directory structure should be organized as follows:
 ```
